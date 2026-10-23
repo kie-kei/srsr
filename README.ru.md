@@ -35,11 +35,13 @@ cargo uninstall srsr
 ## Первый поиск
 
 ```sh
-srsr --data-dir ~/.local/share/srsr index --collection work ~/notes/work
-srsr --data-dir ~/.local/share/srsr search --collection work 'машина OR running'
+srsr index --collection work ~/notes/work
+srsr search --collection work 'машина OR running'
 ```
 
-`--data-dir` по умолчанию `.srsr` относительно текущего каталога. `index` и `search` выводят JSON в stdout, `skill` — Markdown. Ошибки — stderr с ненулевым exit code. Идентификатор коллекции: 1–128 ASCII-букв, цифр, `-`, `_`. Поиск отсутствующей коллекции — ошибка, а не создание пустого индекса. Путь к Markdown нужен только при индексации: поиск читает сохранённый снимок.
+`--data-dir` по умолчанию — `~/.srsr` в домашнем каталоге текущего пользователя, независимо от рабочей папки. Каждая коллекция хранится в отдельном подкаталоге, например `~/.srsr/work/`. Явный `--data-dir` переопределяет путь; явно заданные относительные пути по-прежнему отсчитываются от рабочей папки. Старые индексы в проектной `.srsr` автоматически не переносятся: их можно открыть через `--data-dir /path/to/project/.srsr`. Если домашний каталог определить не удалось, нужно явно передать `--data-dir`.
+
+`index` и `search` выводят JSON в stdout, `skill` — Markdown. Ошибки — stderr с ненулевым exit code. Идентификатор коллекции: 1–128 ASCII-букв, цифр, `-`, `_`. Поиск отсутствующей коллекции — ошибка, а не создание пустого индекса. Путь к Markdown нужен только при индексации: поиск читает сохранённый снимок.
 
 ```sh
 srsr index -c personal ~/notes/personal

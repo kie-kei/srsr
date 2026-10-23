@@ -35,11 +35,13 @@ This removes the Cargo-installed executable, not your Markdown sources, collecti
 ## First search
 
 ```sh
-srsr --data-dir ~/.local/share/srsr index --collection work ~/notes/work
-srsr --data-dir ~/.local/share/srsr search --collection work 'машина OR running'
+srsr index --collection work ~/notes/work
+srsr search --collection work 'машина OR running'
 ```
 
-`--data-dir` defaults to `.srsr` relative to the current directory. `index` and `search` write JSON to stdout; `skill` prints Markdown. Failures write to stderr and return a nonzero exit code. Collection names contain 1–128 ASCII letters, digits, `-`, or `_`. Searching a missing collection fails rather than creating an empty index. The Markdown directory is only needed for indexing: search reads the stored snapshot.
+`--data-dir` defaults to `~/.srsr` in the current user's home directory, independent of the working directory. Each collection has its own subdirectory, such as `~/.srsr/work/`. An explicit `--data-dir` overrides this location; explicitly supplied relative paths remain relative to the working directory. Existing indexes in a project-local `.srsr` are not moved automatically: use `--data-dir /path/to/project/.srsr` to open them. If the home directory cannot be determined, pass `--data-dir` explicitly.
+
+`index` and `search` write JSON to stdout; `skill` prints Markdown. Failures write to stderr and return a nonzero exit code. Collection names contain 1–128 ASCII letters, digits, `-`, or `_`. Searching a missing collection fails rather than creating an empty index. The Markdown directory is only needed for indexing: search reads the stored snapshot.
 
 ```sh
 srsr index -c personal ~/notes/personal

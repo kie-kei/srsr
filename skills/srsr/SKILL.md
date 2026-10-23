@@ -11,8 +11,8 @@ Use `srsr` for local full-text retrieval. Commands run locally; no model or netw
 ## Establish scope
 
 - Obtain the collection name and data directory from the user's request, project instructions, or known configuration. Every search requires exactly one collection. Never broaden to another collection without authorization.
-- Prefer an absolute `--data-dir` so changing the working directory does not select a different index. Its default is `.srsr` relative to the current directory, not a global store.
-- If a needed collection or path is unknown, ask for it. There is no collection-list command or implicit cross-collection search.
+- The default index root is `~/.srsr` in the current user's home directory, independent of the working directory. An explicit `--data-dir` overrides it; prefer an absolute path when overriding so changing directories does not select another index.
+- If a needed collection or custom path is unknown, ask for it. There is no collection-list command or implicit cross-collection search. Old project-local `.srsr` indexes are not moved automatically; select their absolute path explicitly. If the home directory cannot be determined, pass `--data-dir`.
 - Use `srsr --help` and `srsr search --help` for installed-version options. `srsr skill` prints this skill as plain Markdown; `index` and `search` return JSON. Errors go to stderr with a nonzero exit status.
 
 ## Search first; do not reindex implicitly

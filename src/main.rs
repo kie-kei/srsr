@@ -4,7 +4,7 @@ use std::{
     process::ExitCode,
 };
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use srsr::{
     ingest::index_collection,
@@ -14,9 +14,9 @@ use srsr::{
 #[derive(Parser)]
 #[command(version, about = "Isolated Markdown knowledge collections with RU/EN full-text search", long_about = None)]
 struct Cli {
-    /// Directory holding independent collection indexes (not the Markdown source)
-    #[arg(long, global = true, default_value = ".srsr")]
-    data_dir: PathBuf,
+    /// Directory holding collection indexes (default: ~/.srsr)
+    #[arg(long, global = true)]
+    data_dir: Option<PathBuf>,
     #[command(subcommand)]
     command: Command,
 }
@@ -68,14 +68,23 @@ enum Command {
 
 fn run(cli: Cli) -> Result<()> {
     let mut stdout = io::stdout().lock();
+    let data_dir = cli.data_dir.or_else(|| {
+        std::env::home_dir()
+            .filter(|home| home.is_absolute())
+            .map(|home| home.join(".srsr"))
+    });
     let value = match cli.command {
         Command::Skill => {
             stdout.write_all(include_str!("../skills/srsr/SKILL.md").as_bytes())?;
             return Ok(());
         }
-        Command::Index { collection, source } => {
-            serde_json::to_value(index_collection(&cli.data_dir, &collection, &source)?)?
-        }
+        Command::Index { collection, source } => serde_json::to_value(index_collection(
+            data_dir
+                .as_deref()
+                .context("cannot determine home directory; pass --data-dir")?,
+            &collection,
+            &source,
+        )?)?,
         Command::Search {
             collection,
             query,
@@ -89,7 +98,9 @@ fn run(cli: Cli) -> Result<()> {
             stats,
             explain,
         } => search_collection(
-            &cli.data_dir,
+            data_dir
+                .as_deref()
+                .context("cannot determine home directory; pass --data-dir")?,
             &collection,
             &SearchOptions {
                 query,
