@@ -4,10 +4,12 @@ use std::{
     process::ExitCode,
 };
 
-use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use anyhow::{Context, Result, ensure};
+use clap::{CommandFactory, Parser, Subcommand};
 use srsr::{
+    delete_collection,
     ingest::index_collection,
+    list_collections,
     search::{SearchOptions, search_collection},
 };
 
@@ -25,12 +27,27 @@ struct Cli {
 enum Command {
     /// Print the bundled agent skill as Markdown
     Skill,
+    /// List collections in the data directory; output is JSON
+    Collections,
+    /// Delete a collection's index (source files are never touched)
+    Delete {
+        #[arg(short, long)]
+        collection: String,
+        /// Confirm the deletion of the collection index
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Print shell completion scripts to stdout
+    Completions { shell: clap_complete::Shell },
     /// Synchronize a collection with a Markdown directory; removed files leave the index
     Index {
         #[arg(short, long)]
         collection: String,
         /// Directory scanned recursively; symbolic links are not followed
         source: PathBuf,
+        /// Skip files whose relative path matches (repeatable); e.g. '.obsidian' or 'drafts/**'
+        #[arg(long = "exclude")]
+        excludes: Vec<String>,
     },
     /// Search only the specified collection; output is JSON
     Search {
@@ -54,12 +71,24 @@ enum Command {
         limit: usize,
         #[arg(long, default_value_t = 0)]
         offset: usize,
-        /// Frontmatter path for a terms aggregation over all matches (repeatable)
+        /// Frontmatter path for a terms aggregation over all matches (repeatable); append :N for up to 100 buckets
         #[arg(long = "facet")]
         facets: Vec<String>,
         /// Numeric frontmatter path for count/min/max/sum/avg (repeatable)
         #[arg(long = "stats")]
         stats: Vec<String>,
+        /// Order hits by `path` or a frontmatter path instead of relevance; append :asc or :desc
+        #[arg(long, allow_hyphen_values = true)]
+        sort: Option<String>,
+        /// Hit keys to include, comma-separated (repeatable): score,path,title,metadata,snippet,explanation
+        #[arg(long = "fields", value_delimiter = ',')]
+        fields: Vec<String>,
+        /// Drop the snippet key from hits
+        #[arg(long)]
+        no_snippet: bool,
+        /// Stream one hit per line, then a final {"total":...} envelope line
+        #[arg(long)]
+        jsonl: bool,
         /// Include Tantivy's score explanation per hit
         #[arg(long)]
         explain: bool,
@@ -78,12 +107,37 @@ fn run(cli: Cli) -> Result<()> {
             stdout.write_all(include_str!("../skills/srsr/SKILL.md").as_bytes())?;
             return Ok(());
         }
-        Command::Index { collection, source } => serde_json::to_value(index_collection(
+        Command::Collections => serde_json::json!({ "collections": list_collections(
+            data_dir
+                .as_deref()
+                .context("cannot determine home directory; pass --data-dir")?,
+        )? }),
+        Command::Delete { collection, yes } => {
+            ensure!(yes, "pass --yes to delete the collection index");
+            delete_collection(
+                data_dir
+                    .as_deref()
+                    .context("cannot determine home directory; pass --data-dir")?,
+                &collection,
+            )?;
+            serde_json::json!({ "deleted": collection })
+        }
+        Command::Completions { shell } => {
+            let mut command = Cli::command();
+            clap_complete::generate(shell, &mut command, "srsr", &mut stdout);
+            return Ok(());
+        }
+        Command::Index {
+            collection,
+            source,
+            excludes,
+        } => serde_json::to_value(index_collection(
             data_dir
                 .as_deref()
                 .context("cannot determine home directory; pass --data-dir")?,
             &collection,
             &source,
+            &excludes,
         )?)?,
         Command::Search {
             collection,
@@ -96,28 +150,55 @@ fn run(cli: Cli) -> Result<()> {
             offset,
             facets,
             stats,
+            sort,
+            fields,
+            no_snippet,
+            jsonl,
             explain,
-        } => search_collection(
-            data_dir
-                .as_deref()
-                .context("cannot determine home directory; pass --data-dir")?,
-            &collection,
-            &SearchOptions {
-                query,
-                filters,
-                fuzzy,
-                fuzzy_prefix,
-                any,
-                limit,
-                offset,
-                facets,
-                stats,
-                explain,
-            },
-        )?,
+        } => {
+            let result = search_collection(
+                data_dir
+                    .as_deref()
+                    .context("cannot determine home directory; pass --data-dir")?,
+                &collection,
+                &SearchOptions {
+                    query,
+                    filters,
+                    fuzzy,
+                    fuzzy_prefix,
+                    any,
+                    limit,
+                    offset,
+                    facets,
+                    stats,
+                    explain,
+                    sort,
+                    fields,
+                    snippet: !no_snippet,
+                },
+            )?;
+            if jsonl {
+                write_jsonl(&mut stdout, result)?;
+                return Ok(());
+            }
+            serde_json::to_value(result)?
+        }
     };
     serde_json::to_writer_pretty(&mut stdout, &value)?;
     writeln!(stdout)?;
+    Ok(())
+}
+
+/// Streams each hit as one compact JSON line, then the envelope without hits.
+fn write_jsonl(stdout: &mut impl Write, mut result: serde_json::Value) -> Result<()> {
+    let hits = result
+        .as_object_mut()
+        .and_then(|object| object.remove("hits"))
+        .context("search result has no hits");
+    for hit in hits?.as_array().context("hits must be an array")? {
+        writeln!(stdout, "{}", serde_json::to_string(hit)?)?;
+    }
+    writeln!(stdout, "{}", serde_json::to_string(&result)?)?;
     Ok(())
 }
 
