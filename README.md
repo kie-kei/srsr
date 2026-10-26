@@ -14,6 +14,12 @@ curl -fsSL https://raw.githubusercontent.com/kie-kei/srsr/main/install.sh | sh
 
 Only run remote scripts from sources you trust; inspect [install.sh](install.sh) before running it. Cargo installs the executable into `${CARGO_HOME:-$HOME/.cargo}/bin` by default; ensure that directory is on `PATH`. Rerun the command to install from the current `main` branch. Cargo fetches the repository over HTTPS.
 
+If [cargo-binstall](https://github.com/cargo-bins/cargo-binstall) is installed, the installer downloads the prebuilt release binary instead of compiling (the install script also tries this automatically and falls back to a source build):
+
+```sh
+cargo binstall --git https://github.com/kie-kei/srsr srsr
+```
+
 Alternatively, clone the repository and install from source yourself:
 
 ```sh
@@ -41,13 +47,22 @@ srsr search --collection work 'машина OR running'
 
 `--data-dir` defaults to `~/.srsr` in the current user's home directory, independent of the working directory. Each collection has its own subdirectory, such as `~/.srsr/work/`. An explicit `--data-dir` overrides this location; explicitly supplied relative paths remain relative to the working directory. Existing indexes in a project-local `.srsr` are not moved automatically: use `--data-dir /path/to/project/.srsr` to open them. If the home directory cannot be determined, pass `--data-dir` explicitly.
 
-`index` and `search` write JSON to stdout; `skill` prints Markdown. Failures write to stderr and return a nonzero exit code. Collection names contain 1–128 ASCII letters, digits, `-`, or `_`. Searching a missing collection fails rather than creating an empty index. The Markdown directory is only needed for indexing: search reads the stored snapshot.
+`index`, `search`, `collections`, and `delete` write JSON to stdout; `skill` prints Markdown and `completions` prints a shell script. Failures write to stderr and return a nonzero exit code. Collection names contain 1–128 ASCII letters, digits, `-`, or `_`. Searching a missing collection fails rather than creating an empty index. The Markdown directory is only needed for indexing: search reads the stored snapshot.
 
 ```sh
 srsr index -c personal ~/notes/personal
 srsr index -c work ~/notes/work
 srsr search -c personal 'база знаний'
 ```
+
+List what already exists, and remove collections you no longer need (only the index is deleted — never a source file):
+
+```sh
+srsr collections
+srsr delete -c work --yes
+```
+
+`collections` reports each subdirectory of the data directory: healthy collections with `documents`, `indexed_at` (UTC time of the last successful `index`), and the `source` directory as passed; anything that is not a readable index appears with an `error` key instead of aborting the listing. `delete` requires `--yes` and refuses directories that are not srsr indexes.
 
 Searching `personal` never combines its results with `work`, even when filenames overlap. Separate indexes also isolate BM25 statistics. This is search-space isolation, **not access control**: anyone with filesystem access to an index can read its stored text and metadata. Keep private indexes out of shared directories.
 
@@ -76,6 +91,14 @@ Strings, numbers, booleans, nulls, nested objects, and arrays retain their JSON 
 
 Running `index` again synchronizes the collection with the **entire supplied directory**: new documents are added, changed documents replaced, and missing documents removed from the index. Unchanged documents are not reindexed. The JSON report contains `added`, `updated`, `deleted`, and `unchanged` counts. Renaming a file is a deletion and an addition. Indexing a different directory under the same collection name replaces that collection's contents with the new directory; source files are never deleted.
 
+Repeatable `--exclude` patterns skip files whose relative path matches a glob, gitignore style: a pattern without a slash matches any path component (`.obsidian`, `*.skip.md`), a pattern with a slash anchors to the source root (`drafts/**`), and `*` does not cross `/`:
+
+```sh
+srsr index -c work ~/notes/work --exclude .obsidian --exclude 'drafts/**' --exclude '*.skip.md'
+```
+
+Each successful synchronization also writes `srsr.json` next to the Tantivy index, recording a schema version, the source directory, the UTC time of the commit, and the document count; this is what `collections` reports. A collection indexed by a newer srsr (newer schema version) fails to open with an upgrade hint instead of misbehaving; collections indexed before the file existed keep working.
+
 Updates are published in one commit. Read or frontmatter errors abort the update and leave the previous snapshot available. Tantivy allows one writer per collection; searches and work on other collections can proceed independently. Indexing uses mmap, a multithreaded writer, and Tantivy's built-in segment merge policy. Rerun `index` to pick up file changes; there is no filesystem watcher.
 
 ## Search
@@ -101,6 +124,28 @@ srsr search -c work '*'                       # all documents in the collection
 Fuzzy search applies to terms in `title`, `body`, and `meta`, with adjacent transpositions costing one edit. It is **off by default**: omitting `--fuzzy` is equivalent to `--fuzzy 0`. Distances 1 and 2 enable typo tolerance; `--fuzzy-prefix` requires a nonzero distance. Stemming and normalization remain enabled when fuzzy search is off. Phrases, ranges, and regexes retain their native Tantivy semantics: `--fuzzy` does not turn phrases into fuzzy phrases. Regexes match **stemmed index terms**, not source text, and use Tantivy FST syntax, not PCRE. Prefix matching uses the native `"word"*` operator, not an arbitrary shell wildcard such as `foo*`.
 
 The title boost and analyzer pipeline are fixed in code. Query-level boosts such as `title:Rust^3` can adjust individual clauses and combine with the field boost. There is no configuration file for field weights or BM25 parameters, and no separate exact-versus-fuzzy ranking weight.
+
+### Sorting and output shaping
+
+By default hits come back in BM25 order. `--sort` orders them by `path` or by any frontmatter path instead, with an optional `:asc` (default) or `:desc` suffix:
+
+```sh
+srsr search -c work '*' --sort date:desc
+srsr search -c work '*' --sort year --limit 100
+srsr search -c work '*' --sort path
+```
+
+Sorting reads the original typed values, not the analyzed index: numbers compare numerically, strings (including ISO dates) lexicographically, booleans after strings, and other JSON types after that. Arrays use their smallest value ascending or largest value descending; documents missing the field always sort last regardless of direction; ties break by relative path ascending. Hits still carry their BM25 `score`. `--sort path:desc` is valid too. Sorted search reads every matching stored document before paginating, so very large result sets trade speed for order.
+
+Trim the output for machines and pipes:
+
+```sh
+srsr search -c work 'Rust' --fields path,title,score
+srsr search -c work 'Rust' --no-snippet
+srsr search -c work 'Rust' --fields path --jsonl | head -5
+```
+
+`--fields` accepts `score`, `path`, `title`, `metadata`, `snippet`, and `explanation` (repeatable or comma-separated; default keeps all). `--no-snippet` drops snippets even in the default field set. `--jsonl` prints one compact hit per line, then a final envelope line such as `{"total":42}` — with an `aggregations` key when facets or stats were requested — instead of the pretty-printed object. `explanation` still requires `--explain`.
 
 ## Metadata: full-text search and exact filters
 
@@ -137,12 +182,12 @@ Nested paths use dots, such as `meta.owner.name`. Escape a literal dot in a YAML
 ```sh
 srsr search -c work 'поиск' --limit 10 --offset 10 --explain
 srsr search -c work '*' --facet tags --facet status --stats rating
-srsr search -c work '*' --filter 'exact.year:[2024 TO *]' --facet tags --stats rating
+srsr search -c work '*' --facet tags:25 --filter 'exact.year:[2024 TO *]'
 ```
 
-Search returns `total` and `hits`. Each hit contains its source-relative `path`, `title`, BM25 `score`, original `metadata`, and `snippet`. Snippets are escaped HTML with `<b>` highlights for body matches; metadata-only, fuzzy, and regex matches may not be highlighted. `--explain` adds Tantivy's score explanation. `limit` accepts 1–1000 and `offset` accepts 0–100000. `total` is independent of pagination.
+Search returns `total` and `hits`. Each hit contains its source-relative `path`, `title`, BM25 `score`, original `metadata`, and `snippet` — unless narrowed by `--fields`/`--no-snippet`. Snippets are escaped HTML with `<b>` highlights for body matches; metadata-only, fuzzy, and regex matches may not be highlighted. `--explain` adds Tantivy's score explanation. `limit` accepts 1–1000 and `offset` accepts 0–100000. `total` is independent of pagination.
 
-`--facet` and `--stats` accept a **frontmatter path without the `exact.` prefix**. They use native Tantivy aggregations over all matching documents after filtering, not just the current page. `aggregations.facets.<path>` contains terms buckets; `aggregations.stats.<path>` contains numeric count/min/max/sum/avg. Terms use Tantivy's default top-10 buckets, not all distinct values. Statistics count values in multivalued fields; facets report document counts. Aggregations use fast fields with original, unstemmed values.
+`--facet` and `--stats` accept a **frontmatter path without the `exact.` prefix**; append `:N` (1–100) to a facet to return up to N buckets instead of the default top-10. They use native Tantivy aggregations over all matching documents after filtering, not just the current page. `aggregations.facets.<path>` contains terms buckets; `aggregations.stats.<path>` contains numeric count/min/max/sum/avg. Statistics count values in multivalued fields; facets report document counts. Aggregations use fast fields with original, unstemmed values.
 
 ## Agent skill
 
@@ -169,14 +214,20 @@ cargo fmt --all -- --check
 cargo clippy --all-targets --locked -- -D warnings
 ```
 
-Tests cover RU/EN stemming and typos, exact and typed-value filters, phrases/slop/prefix/regex, nested frontmatter, Boolean/IN/exists queries, aggregations, pagination, synchronization, rollback on invalid input, collection isolation, empty frontmatter, and leading Markdown rules.
+Tests cover RU/EN stemming and typos, exact and typed-value filters, phrases/slop/prefix/regex, nested frontmatter, Boolean/IN/exists queries, aggregations, pagination, synchronization, rollback on invalid input, collection isolation, empty frontmatter, and leading Markdown rules; a proptest fuzzes the frontmatter parser with arbitrary text. CI runs these gates plus a build on Linux, macOS, and Windows, and checks the declared MSRV (Rust 1.90). See [CHANGELOG.md](CHANGELOG.md) for release history.
+
+Shell completions can be printed for bash, zsh, fish, PowerShell, or Elvish:
+
+```sh
+srsr completions bash > ~/.local/share/bash-completion/completions/srsr
+```
 
 ## Limits
 
-- Uses [Tantivy 0.27 search features](https://docs.rs/tantivy/0.27.0/tantivy/): positions, BM25, query parsing, fuzzy matching, JSON, fast fields, aggregations, snippets, explanations, incremental writing, mmap, and built-in document-store compression. No vector search, synonyms, translation, network API, or distributed search has been added.
-- Frontmatter is YAML, not TOML or JSON blocks. Input must be UTF-8 Markdown. Code and link labels are searchable; raw HTML is not rendered, and HTML blocks and attachments are not indexed. Do not combine independent directories through successive `index` calls under one collection name: each call synchronizes the complete collection.
-- During indexing, parsed documents are held in RAM until writing so a parsing error cannot publish an incomplete snapshot. Collections larger than available memory would need two-pass indexing. The index itself persists on disk after the command exits or the machine restarts. Search uses mmap; the operating system can cache index pages in memory.
-- The index schema is fixed. An incompatible schema fails to open; rebuild from the source Markdown in a new `--data-dir`. Keep the original files: the index is derived data, not a backup.
+- Uses [Tantivy 0.27 search features](https://docs.rs/tantivy/0.27.0/tantivy/): positions, BM25, query parsing, fuzzy matching, JSON, fast fields, aggregations, snippets, explanations, incremental writing, mmap, and built-in document-store compression. No vector search, synonyms, translation, network API, or distributed search has been added. There is no filesystem watcher: rerun `index` to pick up changes.
+- Frontmatter is YAML (parsed with the maintained `serde_yaml_ng` fork of `serde_yaml`), not TOML or JSON blocks. Input must be UTF-8 Markdown. Code and link labels are searchable; raw HTML is not rendered, and HTML blocks and attachments are not indexed. Do not combine independent directories through successive `index` calls under one collection name: each call synchronizes the complete collection.
+- During indexing, parsed documents are held in RAM until writing so a parsing error cannot publish an incomplete snapshot. Collections larger than available memory would need two-pass indexing. Sorted search likewise reads every matching stored document to compute its sort key before paginating. The index itself persists on disk after the command exits or the machine restarts. Search uses mmap; the operating system can cache index pages in memory.
+- The index schema is fixed and versioned via `srsr.json`. An incompatible schema fails to open; rebuild from the source Markdown in a new `--data-dir`. Keep the original files: the index is derived data, not a backup.
 
 ## License
 

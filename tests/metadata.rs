@@ -16,6 +16,9 @@ fn query(text: &str) -> SearchOptions {
         facets: vec![],
         stats: vec![],
         explain: false,
+        sort: None,
+        fields: vec![],
+        snippet: true,
     }
 }
 
@@ -26,7 +29,7 @@ fn frontmatter_types_bom_crlf_and_literal_dotted_keys_survive_indexing() {
     let data = dir.path().join("data");
     fs::create_dir(&source).unwrap();
     fs::write(source.join("note.md"), "\u{feff}---\r\ntitle: Types\r\ndate: '2025-01-15'\r\nnumber: 2025\r\nstring: '2025'\r\nempty: null\r\nbuild.version: stable\r\nitems: [one, two]\r\n---\r\n# Content\r\n`visible_code` and [visible link](https://example.com/hidden_url).\r\nA data**base**.\r\n").unwrap();
-    index_collection(&data, "types", &source).unwrap();
+    index_collection(&data, "types", &source, &[]).unwrap();
     for text in [
         "exact.date:[2025-01-01 TO 2025-12-31]",
         "exact.build\\.version:stable",
@@ -60,7 +63,7 @@ fn frontmatter_types_bom_crlf_and_literal_dotted_keys_survive_indexing() {
     ] {
         fs::write(source.join("bad.md"), invalid).unwrap();
         assert!(
-            index_collection(&data, "types", &source).is_err(),
+            index_collection(&data, "types", &source, &[]).is_err(),
             "accepted {invalid}"
         );
         assert_eq!(
@@ -100,7 +103,7 @@ fn empty_frontmatter_and_leading_markdown_rules_remain_searchable() {
     for (filename, text, _, _) in &cases {
         fs::write(source.join(filename), text).unwrap();
     }
-    index_collection(&data, "notes", &source).unwrap();
+    index_collection(&data, "notes", &source, &[]).unwrap();
     for (filename, _, title, term) in cases {
         let result = search_collection(&data, "notes", &query(&format!("body:{term}"))).unwrap();
         assert_eq!(result["total"], 1, "{filename}");

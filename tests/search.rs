@@ -18,6 +18,9 @@ fn options(query: &str) -> SearchOptions {
         facets: vec![],
         stats: vec![],
         explain: false,
+        sort: None,
+        fields: vec![],
+        snippet: true,
     }
 }
 
@@ -28,7 +31,7 @@ fn fixture() -> (TempDir, std::path::PathBuf, std::path::PathBuf) {
     fs::create_dir(&source).unwrap();
     fs::write(source.join("ru.md"), "---\ntitle: Базы знаний\ntags: [машины, Search Engines]\nstatus: Draft\nyear: 2024\nrating: 4.5\nactive: true\nowner:\n  name: Alice Smith\n---\n# Поиск\nМашины помогают людям искать документы.\nA quick brown fox. Café database.\n").unwrap();
     fs::write(source.join("en.MD"), "---\ntitle: Search notes\ntags: [running, Guides]\nstatus: published\nyear: 2025\nrating: 2.5\nactive: false\n---\n# Notes\nRunning wolves walked through forests. A quick red brown fox.\n").unwrap();
-    index_collection(&data, "work", &source).unwrap();
+    index_collection(&data, "work", &source, &[]).unwrap();
     (dir, source, data)
 }
 
@@ -133,13 +136,14 @@ fn synchronization_is_atomic_and_collections_do_not_leak() {
     let other = dir.path().join("private");
     fs::create_dir(&other).unwrap();
     fs::write(other.join("secret.md"), "Secret pineapple").unwrap();
-    index_collection(&data, "private", &other).unwrap();
+    index_collection(&data, "private", &other, &[]).unwrap();
     assert!(paths(&data, "pineapple").is_empty());
     assert_eq!(
         search_collection(&data, "private", &options("pineapple")).unwrap()["total"],
         1
     );
-    let report = serde_json::to_value(index_collection(&data, "work", &source).unwrap()).unwrap();
+    let report =
+        serde_json::to_value(index_collection(&data, "work", &source, &[]).unwrap()).unwrap();
     assert_eq!(report["unchanged"], 2);
     fs::write(source.join("ru.md"), "# Changed\nNewly invented unicorn").unwrap();
     fs::remove_file(source.join("en.MD")).unwrap();
@@ -148,16 +152,16 @@ fn synchronization_is_atomic_and_collections_do_not_leak() {
         "---\ntags: [unterminated\n---\nBroken",
     )
     .unwrap();
-    assert!(index_collection(&data, "work", &source).is_err());
+    assert!(index_collection(&data, "work", &source, &[]).is_err());
     assert_eq!(paths(&data, "walk"), ["en.MD"]);
     assert!(paths(&data, "unicorn").is_empty());
     fs::remove_file(source.join("broken.md")).unwrap();
-    index_collection(&data, "work", &source).unwrap();
+    index_collection(&data, "work", &source, &[]).unwrap();
     assert_eq!(paths(&data, "unicorn"), ["ru.md"]);
     assert!(paths(&data, "walk").is_empty());
     assert!(paths(&data, "машина").is_empty());
     fs::remove_file(source.join("ru.md")).unwrap();
-    index_collection(&data, "work", &source).unwrap();
+    index_collection(&data, "work", &source, &[]).unwrap();
     assert!(paths(&data, "*").is_empty());
 }
 
@@ -236,4 +240,110 @@ fn invalid_queries_and_collection_paths_fail_closed() {
         std::os::unix::fs::symlink(data.join("work"), data.join("alias")).unwrap();
         assert!(search_collection(&data, "alias", &options("*")).is_err());
     }
+}
+
+#[test]
+fn sort_orders_by_frontmatter_path_and_type_with_missing_last() {
+    let (_dir, _source, data) = fixture();
+    let mut search = options("*");
+    search.sort = Some("year:desc".into());
+    search.fields = vec!["path".into(), "score".into()];
+    let result = search_collection(&data, "work", &search).unwrap();
+    let paths: Vec<_> = result["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|hit| hit["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(paths, ["en.MD", "ru.md"], "newest year first");
+    assert!(result["hits"][0].get("title").is_none());
+    assert!(result["hits"][0]["score"].as_f64().is_some());
+
+    search.sort = Some("path".into());
+    let result = search_collection(&data, "work", &search).unwrap();
+    let paths: Vec<_> = result["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|hit| hit["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(paths, ["en.MD", "ru.md"]);
+
+    search.sort = Some("owner.name".into());
+    let result = search_collection(&data, "work", &search).unwrap();
+    // en.MD has no owner, so it sorts after the typed value in ru.md.
+    assert_eq!(result["hits"][0]["path"], "ru.md");
+
+    search.sort = Some("year:sideways".into());
+    assert!(search_collection(&data, "work", &search).is_err());
+    search.sort = Some("year".into());
+    search.fields = vec!["nosuch".into()];
+    assert!(search_collection(&data, "work", &search).is_err());
+}
+
+#[test]
+fn field_selection_and_snippet_flag_shape_hits() {
+    let (_dir, _source, data) = fixture();
+    let mut search = options("машина");
+    search.fields = vec!["path".into()];
+    let result = search_collection(&data, "work", &search).unwrap();
+    let hit = &result["hits"][0];
+    assert_eq!(hit.as_object().unwrap().len(), 1);
+    assert!(hit.get("path").is_some());
+
+    let mut search = options("машина");
+    search.snippet = false;
+    let result = search_collection(&data, "work", &search).unwrap();
+    let hit = &result["hits"][0];
+    assert!(hit.get("snippet").is_none());
+    assert!(hit.get("title").is_some());
+}
+
+#[test]
+fn facet_size_limits_buckets_and_validation_stays_strict() {
+    let (_dir, _source, data) = fixture();
+    let mut search = options("*");
+    search.facets = vec!["tags:1".into()];
+    let result = search_collection(&data, "work", &search).unwrap();
+    let buckets = result["aggregations"]["facets"]["tags"]["buckets"]
+        .as_array()
+        .unwrap();
+    assert_eq!(buckets.len(), 1);
+    assert_eq!(buckets[0]["doc_count"], 1);
+    search.facets = vec!["tags:0".into()];
+    assert!(search_collection(&data, "work", &search).is_err());
+    search.facets = vec!["tags:101".into()];
+    assert!(search_collection(&data, "work", &search).is_err());
+}
+
+#[test]
+fn excludes_skip_matching_files_and_can_be_relaxed() {
+    let (dir, source, data) = fixture();
+    fs::create_dir_all(source.join("drafts")).unwrap();
+    fs::write(source.join("drafts/wip.md"), "# Draft\nwipmachine").unwrap();
+    fs::write(source.join("skip.skip.md"), "# Skip\nskipmachine").unwrap();
+    index_collection(
+        &data,
+        "work",
+        &source,
+        &["drafts".to_owned(), "*.skip.md".to_owned()],
+    )
+    .unwrap();
+    assert_eq!(paths(&data, "wipmachine"), Vec::<String>::new());
+    assert_eq!(paths(&data, "skipmachine"), Vec::<String>::new());
+    assert_eq!(paths(&data, "машина"), ["ru.md"]);
+    index_collection(&data, "work", &source, &[]).unwrap();
+    assert_eq!(paths(&data, "wipmachine"), ["drafts/wip.md"]);
+    assert_eq!(paths(&data, "skipmachine"), ["skip.skip.md"]);
+    assert!(
+        index_collection(&data, "work", &source, &["[".to_owned()]).is_err(),
+        "invalid glob rejected"
+    );
+    let meta: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(dir.path().join("indexes").join("work").join("srsr.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(meta["schema_version"], 1);
+    assert_eq!(meta["documents"], 4);
+    assert!(meta["indexed_at"].as_str().unwrap().ends_with('Z'));
 }

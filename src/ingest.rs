@@ -1,6 +1,12 @@
-use std::{collections::BTreeMap, fs, path::Path};
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::Path,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use anyhow::{Context, Result, bail, ensure};
+use globset::{GlobBuilder, GlobMatcher};
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -11,7 +17,10 @@ use tantivy::{
 };
 use walkdir::WalkDir;
 
-use crate::{collection_path, open_collection, register, schema};
+use crate::{
+    CollectionMeta, SCHEMA_VERSION, collection_path, open_collection, register, schema,
+    write_collection_meta,
+};
 
 #[derive(Debug, Default, Serialize)]
 pub struct IndexReport {
@@ -27,8 +36,14 @@ struct ParsedDocument {
     meta: Map<String, Value>,
 }
 
-pub fn index_collection(root: &Path, collection: &str, source: &Path) -> Result<IndexReport> {
+pub fn index_collection(
+    root: &Path,
+    collection: &str,
+    source: &Path,
+    excludes: &[String],
+) -> Result<IndexReport> {
     let path = collection_path(root, collection)?;
+    let matchers = compile_excludes(excludes)?;
     let source_info = fs::symlink_metadata(source)
         .with_context(|| format!("cannot inspect source {}", source.display()))?;
     ensure!(
@@ -55,6 +70,9 @@ pub fn index_collection(root: &Path, collection: &str, source: &Path) -> Result<
             .to_str()
             .context("Markdown paths must be valid UTF-8")?
             .replace(std::path::MAIN_SEPARATOR, "/");
+        if is_excluded(&relative, &matchers) {
+            continue;
+        }
         let text = fs::read_to_string(entry.path())
             .with_context(|| format!("cannot read {}", entry.path().display()))?;
         let parsed = parse_document(&text, entry.path())
@@ -134,7 +152,18 @@ pub fn index_collection(root: &Path, collection: &str, source: &Path) -> Result<
         Ok(report)
     })();
     match result {
-        Ok(report) => Ok(report),
+        Ok(report) => {
+            write_collection_meta(
+                &path,
+                &CollectionMeta {
+                    schema_version: SCHEMA_VERSION,
+                    source: source.display().to_string(),
+                    indexed_at: rfc3339_utc_now()?,
+                    documents: (report.added + report.updated + report.unchanged) as u64,
+                },
+            );
+            Ok(report)
+        }
         Err(error) => {
             writer
                 .rollback()
@@ -142,6 +171,89 @@ pub fn index_collection(root: &Path, collection: &str, source: &Path) -> Result<
             Err(error)
         }
     }
+}
+
+fn compile_excludes(excludes: &[String]) -> Result<Vec<GlobMatcher>> {
+    excludes
+        .iter()
+        .map(|pattern| {
+            ensure!(
+                !pattern.trim().is_empty(),
+                "exclude pattern must not be empty"
+            );
+            GlobBuilder::new(pattern)
+                .literal_separator(true)
+                .build()
+                .with_context(|| format!("invalid exclude pattern {pattern:?}"))
+                .map(|glob| glob.compile_matcher())
+        })
+        .collect()
+}
+
+/// A file is excluded when its relative path matches a pattern, when any path
+/// component matches (gitignore-style, so `.obsidian` and `*.skip.md` work at
+/// any depth), or when an ancestor directory matches the pattern itself.
+fn is_excluded(relative: &str, matchers: &[GlobMatcher]) -> bool {
+    for matcher in matchers {
+        if matcher.is_match(relative)
+            || relative
+                .split('/')
+                .any(|component| matcher.is_match(component))
+        {
+            return true;
+        }
+        let mut ancestor = relative;
+        while let Some(index) = ancestor.rfind('/') {
+            ancestor = &ancestor[..index];
+            if matcher.is_match(ancestor) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn rfc3339_utc_now() -> Result<String> {
+    let seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("system clock is before the Unix epoch")?
+        .as_secs() as i64;
+    Ok(format_unix_seconds(seconds))
+}
+
+fn format_unix_seconds(seconds: i64) -> String {
+    let days = seconds.div_euclid(86_400);
+    let rest = seconds.rem_euclid(86_400);
+    let (year, month, day) = civil_from_days(days);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        rest / 3_600,
+        (rest % 3_600) / 60,
+        rest % 60
+    )
+}
+
+/// Howard Hinnant's civil-from-days conversion for the proleptic Gregorian calendar.
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let shifted = days + 719_468;
+    let era = if shifted >= 0 {
+        shifted
+    } else {
+        shifted - 146_096
+    } / 146_097;
+    let day_of_era = (shifted - era * 146_097) as u64;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let year = year_of_era as i64 + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_pointer = (5 * day_of_year + 2) / 153;
+    let day = (day_of_year - (153 * month_pointer + 2) / 5 + 1) as u32;
+    let month = if month_pointer < 10 {
+        month_pointer + 3
+    } else {
+        month_pointer - 9
+    } as u32;
+    (year + i64::from(month <= 2), month, day)
 }
 
 fn parse_document(text: &str, path: &Path) -> Result<ParsedDocument> {
@@ -167,8 +279,8 @@ fn parse_document(text: &str, path: &Path) -> Result<ParsedDocument> {
         {
             Map::new()
         } else {
-            let yaml: serde_yaml::Value =
-                serde_yaml::from_str(yaml).context("invalid YAML frontmatter")?;
+            let yaml: serde_yaml_ng::Value =
+                serde_yaml_ng::from_str(yaml).context("invalid YAML frontmatter")?;
             let Value::Object(meta) = yaml_to_json(yaml)? else {
                 bail!("frontmatter must be an object with string keys");
             };
@@ -243,8 +355,8 @@ fn parse_document(text: &str, path: &Path) -> Result<ParsedDocument> {
     })
 }
 
-fn yaml_to_json(value: serde_yaml::Value) -> Result<Value> {
-    use serde_yaml::Value as Yaml;
+fn yaml_to_json(value: serde_yaml_ng::Value) -> Result<Value> {
+    use serde_yaml_ng::Value as Yaml;
     Ok(match value {
         Yaml::Null => Value::Null,
         Yaml::Bool(value) => Value::Bool(value),
@@ -330,6 +442,72 @@ mod tests {
                 parse_document(text, Path::new("file.md")).is_err(),
                 "accepted {text:?}"
             );
+        }
+    }
+
+    #[test]
+    fn exclusion_matches_paths_components_and_ancestor_directories() {
+        let matchers = compile_excludes(&[
+            ".obsidian".into(),
+            "drafts/**".into(),
+            "*.skip.md".into(),
+            "private/nested".into(),
+        ])
+        .unwrap();
+        assert!(is_excluded(".obsidian/app.json", &matchers));
+        assert!(is_excluded("deep/dir/.obsidian/x", &matchers));
+        assert!(is_excluded("drafts/wip.md", &matchers));
+        assert!(is_excluded("notes/inner.skip.md", &matchers));
+        assert!(is_excluded("private/nested/deep/file.md", &matchers));
+        assert!(!is_excluded("notes/keep.md", &matchers));
+        assert!(!is_excluded("notdrafts/wip.md", &matchers));
+        assert!(!is_excluded("private/file.md", &matchers));
+    }
+
+    #[test]
+    fn timestamps_render_rfc3339_utc() {
+        assert_eq!(format_unix_seconds(0), "1970-01-01T00:00:00Z");
+        assert_eq!(format_unix_seconds(1_735_689_600), "2025-01-01T00:00:00Z");
+        assert_eq!(format_unix_seconds(1_709_164_800), "2024-02-29T00:00:00Z");
+        assert_eq!(format_unix_seconds(86_399), "1970-01-01T23:59:59Z");
+    }
+
+    use proptest::prelude::*;
+
+    fn arbitrary_text() -> BoxedStrategy<String> {
+        let pieces = proptest::sample::select(vec![
+            "---".to_owned(),
+            "---\n".to_owned(),
+            "---\r\n".to_owned(),
+            "\u{feff}".to_owned(),
+            "title: x\n".to_owned(),
+            "key: [1, 2\n".to_owned(),
+            "# comment\n".to_owned(),
+            "null\n".to_owned(),
+            "- item\n".to_owned(),
+            "ключ: значение\n".to_owned(),
+            "a: !tag v\n".to_owned(),
+            ":\n".to_owned(),
+            "\n".to_owned(),
+            "\r".to_owned(),
+            "\u{2028}".to_owned(),
+            "trailing   \n".to_owned(),
+            "…\n".to_owned(),
+        ]);
+        prop_oneof![
+            proptest::collection::vec(pieces, 0..48).prop_map(|pieces| pieces.concat()),
+            proptest::collection::vec(proptest::char::any(), 0..256)
+                .prop_map(|chars| chars.into_iter().collect()),
+        ]
+        .boxed()
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(128))]
+
+        #[test]
+        fn frontmatter_parser_never_panics_on_arbitrary_text(text in arbitrary_text()) {
+            let _ = parse_document(&text, Path::new("file.md"));
         }
     }
 }
