@@ -42,7 +42,7 @@ release too; the CLI's locked JSON output contracts only grow by new keys.
 - GitHub Actions CI (fmt, clippy, tests, build on Linux/macOS/Windows plus
   an MSRV check) and a release workflow attaching prebuilt binaries with
   SHA-256 checksums for five native targets, wired to `cargo-binstall`.
-- `rust-version = "1.88"` (the MSRV of Tantivy 0.27) is declared, and
+- `rust-version = "1.90"` (required by the locked dependencies) is declared, and
   `install.sh` prefers a prebuilt binary via `cargo binstall` when available,
   falling back to a source build.
 

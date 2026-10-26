@@ -2,7 +2,7 @@
 name = "srsr"
 version = "0.2.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.90"
 description = "Collection-isolated Markdown search with Tantivy"
 license = "MIT"
 repository = "https://github.com/kie-kei/srsr"

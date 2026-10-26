@@ -46,7 +46,7 @@ Keep frontmatter behavior explicit: empty/comment-only blocks mean empty metadat
 
 ## Important Files
 
-- `Cargo.toml` / `Cargo.lock`: package metadata, dependency requirements, and locked resolutions; Tantivy is on 0.27, MSRV is 1.88 (`rust-version`), YAML frontmatter uses `serde_yaml_ng`, excludes use `globset`, completions use `clap_complete`. `[package.metadata.binstall]` matches the release workflow asset names.
+- `Cargo.toml` / `Cargo.lock`: package metadata, dependency requirements, and locked resolutions; Tantivy is on 0.27, MSRV is 1.90 (`rust-version`), YAML frontmatter uses `serde_yaml_ng`, excludes use `globset`, completions use `clap_complete`. `[package.metadata.binstall]` matches the release workflow asset names.
 - `README.md` / `README.ru.md`: English/Russian usage documentation with matching command examples. `CHANGELOG.md`: release history per Keep a Changelog.
 - `install.sh`: POSIX-shell installer; prefers a prebuilt binary via `cargo binstall` when available and falls back to `cargo install --git ... --branch main --locked srsr`. Uninstall with `cargo uninstall srsr`; preserve indexes and source files.
 - `.github/workflows/ci.yml`: fmt/clippy/test/build on Linux, macOS, and Windows plus an MSRV check. `.github/workflows/release.yml`: attaches prebuilt binaries with SHA-256 checksums to `v*` tag releases.
@@ -55,7 +55,7 @@ Keep frontmatter behavior explicit: empty/comment-only blocks mean empty metadat
 
 ## Runtime/Tooling Preferences
 
-Use stable Rust and Cargo (MSRV 1.88), edition 2024, with `--locked` for reproducible dependency resolution. Source builds need platform native build tools/linker; the curl installer additionally requires Git and curl; prebuilt binaries via `cargo binstall` avoid compilation entirely. No Node/Bun tooling, pinned Rust toolchain, or custom formatter configuration.
+Use stable Rust and Cargo (MSRV 1.90), edition 2024, with `--locked` for reproducible dependency resolution. Source builds need platform native build tools/linker; the curl installer additionally requires Git and curl; prebuilt binaries via `cargo binstall` avoid compilation entirely. No Node/Bun tooling, pinned Rust toolchain, or custom formatter configuration.
 
 ## Testing & QA
 

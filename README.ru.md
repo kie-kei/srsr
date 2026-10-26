@@ -214,7 +214,7 @@ cargo fmt --all -- --check
 cargo clippy --all-targets --locked -- -D warnings
 ```
 
-Тесты проверяют RU/EN-стемминг и опечатки, точные фильтры и фильтры по типизированным значениям, фразы/slop/prefix/regex, вложенный frontmatter, Boolean/IN/exists, агрегаты, пагинацию, синхронизацию, откат при ошибке, изоляцию коллекций, пустой frontmatter и начальные Markdown-разделители; proptest прогоняет через парсер frontmatter произвольный текст. CI запускает эти проверки со сборкой на Linux, macOS и Windows и проверяет заявленный MSRV (Rust 1.88). История изменений — в [CHANGELOG.md](CHANGELOG.md).
+Тесты проверяют RU/EN-стемминг и опечатки, точные фильтры и фильтры по типизированным значениям, фразы/slop/prefix/regex, вложенный frontmatter, Boolean/IN/exists, агрегаты, пагинацию, синхронизацию, откат при ошибке, изоляцию коллекций, пустой frontmatter и начальные Markdown-разделители; proptest прогоняет через парсер frontmatter произвольный текст. CI запускает эти проверки со сборкой на Linux, macOS и Windows и проверяет заявленный MSRV (Rust 1.90). История изменений — в [CHANGELOG.md](CHANGELOG.md).
 
 Автодополнение для bash, zsh, fish, PowerShell или Elvish печатается так:
 

@@ -214,7 +214,7 @@ cargo fmt --all -- --check
 cargo clippy --all-targets --locked -- -D warnings
 ```
 
-Tests cover RU/EN stemming and typos, exact and typed-value filters, phrases/slop/prefix/regex, nested frontmatter, Boolean/IN/exists queries, aggregations, pagination, synchronization, rollback on invalid input, collection isolation, empty frontmatter, and leading Markdown rules; a proptest fuzzes the frontmatter parser with arbitrary text. CI runs these gates plus a build on Linux, macOS, and Windows, and checks the declared MSRV (Rust 1.88). See [CHANGELOG.md](CHANGELOG.md) for release history.
+Tests cover RU/EN stemming and typos, exact and typed-value filters, phrases/slop/prefix/regex, nested frontmatter, Boolean/IN/exists queries, aggregations, pagination, synchronization, rollback on invalid input, collection isolation, empty frontmatter, and leading Markdown rules; a proptest fuzzes the frontmatter parser with arbitrary text. CI runs these gates plus a build on Linux, macOS, and Windows, and checks the declared MSRV (Rust 1.90). See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 Shell completions can be printed for bash, zsh, fish, PowerShell, or Elvish:
 
